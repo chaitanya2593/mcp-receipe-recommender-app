@@ -1,0 +1,18 @@
+[project]
+name = "mcp-receipe-recommender-app"
+version = "1.0.0"
+description = "Includes MCP RecipeRecommender tools (TheMealDB + OpenFoodFacts). The app allows users to input ingredients and receive recipe recommendations based on those ingredients. It also provides detailed information about the recommended recipes, including nutritional information and cooking instructions."
+authors = [{ name = "Chaitanya Madduri" }]
+requires-python = ">=3.13"
+
+dependencies = [
+    "httpx==0.27.2",
+    "mcp>=1.24.0,<2.0",
+    "fastmcp>=0.4.0",
+    "typer==0.15.2",
+    "openai==1.55.3",
+    "pydantic>=2.6.0",
+    "streamlit==1.42.0",
+    "watchdog==4.0.0",
+    "python-dotenv>=1.1.0",
+]
