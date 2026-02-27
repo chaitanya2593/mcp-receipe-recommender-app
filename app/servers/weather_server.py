@@ -1,78 +1,148 @@
-from fastapi import FastAPI, Query, HTTPException
-from pydantic import BaseModel
+from typing import Any
 import httpx
-from cuisine_rules import recommend
+from mcp.server.fastmcp import FastMCP
 
-app = FastAPI(title="Weather+Cuisine Tool Server", version="1.0.0")
+# Initialize FastMCP server
+mcp = FastMCP("weather")
 
-class WeatherResponse(BaseModel):
-    city: str
-    latitude: float
-    longitude: float
-    temperature_c: float
-    conditions: str
+# Constants
+OPENMETEO_API_BASE = "https://api.open-meteo.com/v1"
+GEOCODING_API_BASE = "https://geocoding-api.open-meteo.com/v1"
 
-class RecoRequest(BaseModel):
-    cuisine: str
-    city: str
+@mcp.tool()
+async def get_forecast(latitude: float, longitude: float) -> dict:
+    """Get weather forecast for a location using Open-Meteo API.
 
-class RecoResponse(BaseModel):
-    cuisine: str
-    city: str
-    temperature_c: float
-    conditions: str
-    recommendations: list[str]
+    Args:
+        latitude: Latitude of the location
+        longitude: Longitude of the location
 
-# --- Tool 1: get_weather(city) ---
-@app.get("/tools/get_weather", response_model=WeatherResponse)
-async def get_weather(city: str = Query(..., min_length=1)):
-    # Geocode (Open-Meteo geocoding)
-    async with httpx.AsyncClient(timeout=15) as client:
-        geo = await client.get(
-            "https://geocoding-api.open-meteo.com/v1/search",
-            params={"name": city, "count": 1, "language": "en", "format": "json"},
-        )
-        geo.raise_for_status()
-        gdata = geo.json()
-        if not gdata.get("results"):
-            raise HTTPException(status_code=404, detail=f"City '{city}' not found")
-        r0 = gdata["results"][0]
-        lat, lon, resolved = r0["latitude"], r0["longitude"], r0["name"]
+    Returns:
+        Dictionary with current weather and forecast information
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{OPENMETEO_API_BASE}/forecast",
+                params={
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "current": "temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m",
+                    "hourly": "temperature_2m,precipitation,weather_code",
+                    "daily": "weather_code,temperature_2m_max,temperature_2m_min",
+                    "timezone": "auto"
+                },
+                timeout=30.0
+            )
+            response.raise_for_status()
+            data = response.json()
 
-        # Current weather
-        wx = await client.get(
-            "https://api.open-meteo.com/v1/forecast",
-            params={"latitude": lat, "longitude": lon, "current_weather": True},
-        )
-        wx.raise_for_status()
-        c = wx.json().get("current_weather", {})
-        temp_c = c.get("temperature")
-        code = c.get("weathercode")
+            current = data.get("current", {})
+            daily = data.get("daily", {})
 
-    # Map WMO weather code to simple description
-    WMO = {
-        0: "clear", 1: "mainly clear", 2: "partly cloudy", 3: "overcast",
-        45: "fog", 48: "rime fog", 51: "light drizzle", 53: "drizzle",
-        55: "dense drizzle", 61: "light rain", 63: "rain", 65: "heavy rain",
-        71: "light snow", 73: "snow", 75: "heavy snow", 95: "thunderstorm",
+            # Format the forecast
+            forecast_info = {
+                "current_temperature_c": current.get("temperature_2m"),
+                "humidity_percent": current.get("relative_humidity_2m"),
+                "weather_code": current.get("weather_code"),
+                "wind_speed_kmh": current.get("wind_speed_10m"),
+                "conditions": interpret_weather_code(current.get("weather_code")),
+                "max_temp_c": daily.get("temperature_2m_max", [None])[0],
+                "min_temp_c": daily.get("temperature_2m_min", [None])[0]
+            }
+
+            return forecast_info
+    except Exception as e:
+        return {
+            "error": f"Unable to fetch forecast: {str(e)}",
+            "current_temperature_c": 20,
+            "conditions": "Unknown"
+        }
+
+@mcp.tool()
+async def get_city_coordinates(city: str) -> dict:
+    """Get latitude and longitude for a city name.
+
+    Args:
+        city: Name of the city (e.g., "Munich", "New York", "Tokyo")
+
+    Returns:
+        Dictionary with latitude, longitude, and city name
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{GEOCODING_API_BASE}/search",
+                params={
+                    "name": city,
+                    "count": 1,
+                    "language": "en",
+                    "format": "json"
+                },
+                timeout=10.0
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get("results") and len(data["results"]) > 0:
+                result = data["results"][0]
+                return {
+                    "latitude": result["latitude"],
+                    "longitude": result["longitude"],
+                    "name": result.get("name"),
+                    "country": result.get("country")
+                }
+            else:
+                # Default to Munich if city not found
+                return {
+                    "latitude": 48.1351,
+                    "longitude": 11.5820,
+                    "name": "Munich",
+                    "country": "Germany"
+                }
+    except Exception as e:
+        # Fallback to Munich
+        return {
+            "latitude": 48.1351,
+            "longitude": 11.5820,
+            "name": "Munich",
+            "country": "Germany"
+        }
+
+def interpret_weather_code(code: int) -> str:
+    """Convert WMO Weather interpretation codes to readable strings."""
+    if code is None:
+        return "Unknown"
+
+    weather_codes = {
+        0: "Clear sky",
+        1: "Mainly clear",
+        2: "Partly cloudy",
+        3: "Overcast",
+        45: "Foggy",
+        48: "Rime fog",
+        51: "Light drizzle",
+        53: "Moderate drizzle",
+        55: "Dense drizzle",
+        61: "Slight rain",
+        63: "Moderate rain",
+        65: "Heavy rain",
+        71: "Slight snow",
+        73: "Moderate snow",
+        75: "Heavy snow",
+        77: "Snow grains",
+        80: "Slight rain showers",
+        81: "Moderate rain showers",
+        82: "Violent rain showers",
+        85: "Slight snow showers",
+        86: "Heavy snow showers",
+        95: "Thunderstorm",
+        96: "Thunderstorm with slight hail",
+        99: "Thunderstorm with heavy hail"
     }
-    conditions = WMO.get(code, "unknown")
-    return WeatherResponse(
-        city=resolved, latitude=lat, longitude=lon,
-        temperature_c=float(temp_c), conditions=conditions
-    )
 
-# --- Tool 2: recommend_dishes(cuisine, city) ---
-@app.post("/tools/recommend", response_model=RecoResponse)
-async def recommend_endpoint(payload: RecoRequest):
-    wx = await get_weather(payload.city)  # reuse endpoint logic
-    dishes = recommend(payload.cuisine, wx.temperature_c, wx.conditions)
-    return RecoResponse(
-        cuisine=payload.cuisine, city=wx.city,
-        temperature_c=wx.temperature_c, conditions=wx.conditions,
-        recommendations=dishes
-    )
+    return weather_codes.get(code, f"Weather code {code}")
 
-# Local run:
-# uvicorn weather_server:app --reload --port 8080
-
+if __name__ == "__main__":
+    # Initialize and run the server
+    mcp.run(transport='stdio')
