@@ -15,4 +15,9 @@ server_list = {
         args=["-m", "mcp_server_fetch"],
         env=None,
     ),
+    "osm-mcp-server": StdioServerParameters(
+        command="uvx",
+        args=["osm-mcp-server"],
+        env=None,
+    ),
 }
