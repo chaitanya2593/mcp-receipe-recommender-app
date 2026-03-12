@@ -15,6 +15,4 @@ server_list = {
         args=["-m", "mcp_server_fetch"],
         env=None,
     ),
-
-    # Add more servers here if needed
 }
