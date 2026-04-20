@@ -151,3 +151,9 @@ cython_debug/
 .env
 /uv.lock
 /reasearch/
+
+# Test / coverage reports
+test-reports/
+reports/
+junit.xml
+coverage.lcov
