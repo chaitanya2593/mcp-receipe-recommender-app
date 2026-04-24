@@ -14,7 +14,7 @@ import os
 import threading
 from concurrent.futures import Future
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from anthropic import AnthropicFoundry
 from mcp import ClientSession, StdioServerParameters
@@ -113,44 +113,37 @@ async def _call_tool(
 
 # --------------------------- Messages loop ---------------------------
 
-def _call_claude(
+def _resolve_tool_calls(
+    client: Any,
+    model: str,
     system: str,
-    user_content: str,
-    mcp_server: Optional[StdioServerParameters] = None,
-) -> str:
-    """Run a single user turn, looping for tool use until the model stops calling tools."""
-    client, model = _client()
+    messages: List[Dict[str, Any]],
+    tools: List[Dict[str, Any]],
+    mcp_server: StdioServerParameters,
+) -> None:
+    """Run the non-streaming tool-use loop, mutating `messages` in place.
 
-    tools: List[Dict[str, Any]] = []
-    if mcp_server is not None:
-        tools = _run_async(_list_tools(mcp_server))
-
-    messages: List[Dict[str, Any]] = [{"role": "user", "content": user_content}]
-
+    Stops once the model produces a turn with `stop_reason != "tool_use"`.
+    Leaves the final assistant turn out of `messages` so the caller can re-issue
+    it as a streamed request.
+    """
     for _ in range(MAX_TOOL_ITERATIONS):
-        kwargs: Dict[str, Any] = {
-            "model": model,
-            "max_tokens": 2048,
-            "system": system,
-            "messages": messages,
-        }
-        if tools:
-            kwargs["tools"] = tools
-
-        response = client.messages.create(**kwargs)
-
+        response = client.messages.create(
+            model=model,
+            max_tokens=2048,
+            system=system,
+            messages=messages,
+            tools=tools,
+        )
         if response.stop_reason != "tool_use":
-            return "".join(
-                b.text for b in response.content if getattr(b, "type", None) == "text"
-            ).strip()
+            # Final turn — do NOT append; caller will re-stream it.
+            return
 
-        # Append assistant turn verbatim, then run each tool call and send back results.
         messages.append({"role": "assistant", "content": response.content})
         tool_results = []
         for block in response.content:
             if getattr(block, "type", None) != "tool_use":
                 continue
-            assert mcp_server is not None
             try:
                 output = _run_async(
                     _call_tool(mcp_server, block.name, dict(block.input or {}))
@@ -166,7 +159,57 @@ def _call_claude(
             )
         messages.append({"role": "user", "content": tool_results})
 
-    return "Tool-use iteration limit reached."
+    raise RuntimeError("Tool-use iteration limit reached.")
+
+
+def _call_claude_stream(
+    system: str,
+    user_content: str,
+    mcp_server: Optional[StdioServerParameters] = None,
+) -> Iterator[str]:
+    """Yield text chunks for the model's final answer.
+
+    If `mcp_server` is provided, any tool calls are resolved non-streaming
+    first; only the post-tool final turn is streamed.
+    """
+    client, model = _client()
+
+    tools: List[Dict[str, Any]] = []
+    if mcp_server is not None:
+        tools = _run_async(_list_tools(mcp_server))
+
+    messages: List[Dict[str, Any]] = [{"role": "user", "content": user_content}]
+
+    if mcp_server is not None and tools:
+        _resolve_tool_calls(client, model, system, messages, tools, mcp_server)
+
+    kwargs: Dict[str, Any] = {
+        "model": model,
+        "max_tokens": 2048,
+        "system": system,
+        "messages": messages,
+    }
+    if tools:
+        kwargs["tools"] = tools
+
+    with client.messages.stream(**kwargs) as stream:
+        for chunk in stream.text_stream:
+            if chunk:
+                yield chunk
+
+
+def _call_claude(
+    system: str,
+    user_content: str,
+    mcp_server: Optional[StdioServerParameters] = None,
+) -> str:
+    """Sync wrapper: accumulate the streamed output into one string."""
+    return "".join(_call_claude_stream(system, user_content, mcp_server)).strip()
+
+
+def _format_preferences(preferences: Optional[List[str]]) -> str:
+    prefs = [p.strip() for p in (preferences or []) if p and p.strip()]
+    return f"Dietary constraints: {', '.join(prefs)}\n\n" if prefs else ""
 
 
 # --------------------------- Public orchestrator ---------------------------
@@ -207,9 +250,12 @@ class RecipeAgent:
         item_name: str,
         place: str = "Munich",
         action: Optional[str] = None,
+        preferences: Optional[List[str]] = None,
+        stream: bool = False,
     ) -> Dict[str, Any]:
         normalized_action = (action or "").strip().lower()
         weather_summary = self._weather(place)
+        prefs_line = _format_preferences(preferences)
 
         if normalized_action not in {"order", "prepare"}:
             return {
@@ -226,36 +272,57 @@ class RecipeAgent:
             }
 
         if normalized_action == "prepare":
-            recipe_text = _call_claude(
-                system=_load_skill("recipe-chef"),
-                user_content=(
-                    f"Item: {item_name}\nCity: {place}\n"
-                    f"Weather context: {weather_summary}\n\n"
-                    "Produce a recipe."
-                ),
+            user_content = (
+                f"{prefs_line}"
+                f"Item: {item_name}\nCity: {place}\n"
+                f"Weather context: {weather_summary}\n\n"
+                "Produce a recipe."
             )
-            return {
+            base = {
                 "item_name": item_name,
                 "place": place,
                 "action": "prepare",
                 "weather": {"conditions": weather_summary},
                 "clarification_needed": False,
-                "recipe": recipe_text or "No recipe generated.",
             }
+            if stream:
+                return {
+                    **base,
+                    "recipe_stream": _call_claude_stream(
+                        system=_load_skill("recipe-chef"),
+                        user_content=user_content,
+                    ),
+                }
+            recipe_text = _call_claude(
+                system=_load_skill("recipe-chef"),
+                user_content=user_content,
+            )
+            return {**base, "recipe": recipe_text or "No recipe generated."}
 
-        places_text = _call_claude(
-            system=_load_skill("place-finder"),
-            user_content=(
-                f"Item: {item_name}\nCity: {place}\n\n"
-                "Find 3 nearby places that sell or serve this."
-            ),
-            mcp_server=MCP_SERVERS["osm"],
+        user_content = (
+            f"{prefs_line}"
+            f"Item: {item_name}\nCity: {place}\n\n"
+            "Find 3 nearby places that sell or serve this."
         )
-        return {
+        base = {
             "item_name": item_name,
             "place": place,
             "action": "order",
             "weather": {"conditions": weather_summary},
             "clarification_needed": False,
-            "places": places_text or "No place suggestions available.",
         }
+        if stream:
+            return {
+                **base,
+                "places_stream": _call_claude_stream(
+                    system=_load_skill("place-finder"),
+                    user_content=user_content,
+                    mcp_server=MCP_SERVERS["osm"],
+                ),
+            }
+        places_text = _call_claude(
+            system=_load_skill("place-finder"),
+            user_content=user_content,
+            mcp_server=MCP_SERVERS["osm"],
+        )
+        return {**base, "places": places_text or "No place suggestions available."}

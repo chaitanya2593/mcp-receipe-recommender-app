@@ -1,0 +1,5 @@
+{
+  "enabledPlugins": {
+    "terraform@claude-plugins-official": true
+  }
+}

@@ -36,6 +36,31 @@ if "pending_request" not in st.session_state:
     st.session_state.pending_request = None
 
 
+# ---- Sidebar: dietary preferences ----
+DIET_OPTIONS = [
+    "Vegetarian", "Vegan", "Pescatarian", "Halal", "Kosher",
+    "Gluten-free", "Dairy-free", "Nut-free", "Low-carb",
+]
+with st.sidebar:
+    st.header("Preferences")
+    diet_selected = st.multiselect(
+        "Dietary preferences",
+        options=DIET_OPTIONS,
+        default=st.session_state.get("diet_selected", []),
+        key="diet_selected",
+    )
+    other_notes = st.text_input(
+        "Other allergies / notes",
+        value=st.session_state.get("other_notes", ""),
+        key="other_notes",
+        placeholder="e.g. no cilantro, mild spice",
+    )
+
+preferences = list(diet_selected)
+if other_notes.strip():
+    preferences.append(other_notes.strip())
+
+
 # Render history
 for m in st.session_state.messages:
     with st.chat_message(m["role"]):
@@ -96,30 +121,36 @@ if user_text:
                     else:
                         item_name = pending["item_name"]
                         place = pending["place"]
-                        result = recipe_crew.run(item_name=item_name, place=place, action=action)
+                        result = recipe_crew.run(
+                            item_name=item_name,
+                            place=place,
+                            action=action,
+                            preferences=preferences,
+                            stream=True,
+                        )
 
                         weather_info = result.get("weather", {})
                         conditions = weather_info.get("conditions", "Unknown") if isinstance(weather_info, dict) else "Unknown"
 
-                        if action == "prepare":
-                            recipe = result.get("recipe", "No recipe generated.")
-                            reply = (
-                                f"**Item:** {item_name}  \n"
-                                f"**City:** {place}  \n"
-                                f"**Weather:** {conditions}\n\n"
-                                f"**Recipe:**\n{recipe}"
-                            )
-                        else:
-                            places = result.get("places", "No place suggestions available.")
-                            reply = (
-                                f"**Item:** {item_name}  \n"
-                                f"**City:** {place}  \n"
-                                f"**Weather:** {conditions}\n\n"
-                                f"**Places to order/buy nearby:**\n{places}"
-                            )
+                        header = (
+                            f"**Item:** {item_name}  \n"
+                            f"**City:** {place}  \n"
+                            f"**Weather:** {conditions}\n\n"
+                        )
+                        if preferences:
+                            header += f"**Preferences:** {', '.join(preferences)}\n\n"
 
-                        st.markdown(reply)
-                        st.session_state.messages.append({"role": "assistant", "content": reply})
+                        if action == "prepare":
+                            header += "**Recipe:**\n"
+                            stream_iter = result.get("recipe_stream")
+                        else:
+                            header += "**Places to order/buy nearby:**\n"
+                            stream_iter = result.get("places_stream")
+
+                        st.markdown(header)
+                        streamed_text = st.write_stream(stream_iter) if stream_iter else ""
+                        full_reply = header + (streamed_text or "")
+                        st.session_state.messages.append({"role": "assistant", "content": full_reply})
                         st.session_state.pending_request = None
 
 
@@ -141,7 +172,7 @@ st.markdown(
     </style>
     <div class="tiny-footer">
       Built by <a href="https://www.linkedin.com/in/v-s-chaitanya-madduri-2886447a/" target="_blank">Chaitanya Madduri</a>.
-      Powered by Python + Streamlit + Claude Agent SDK + Skills + MCP.
+      Powered by Python + Streamlit + Claude (Azure Foundry) + Skills + MCP. Streaming enabled.
     </div>
     """,
     unsafe_allow_html=True,
