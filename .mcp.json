@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "weather": {
+      "command": "python",
+      "args": ["app/servers/weather_server.py"]
+    },
+    "osm": {
+      "command": "uvx",
+      "args": ["osm-mcp-server"]
+    },
+    "fetch": {
+      "command": "python",
+      "args": ["-m", "mcp_server_fetch"]
+    }
+  }
+}

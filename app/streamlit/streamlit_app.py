@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 import re
 import streamlit as st
 from dotenv import load_dotenv
-from app.crewAi import RecipeCrew
+from app.agent import RecipeAgent
 
 load_dotenv()
 
@@ -20,7 +20,7 @@ def extract_url(text: str) -> str | None:
 
 
 # Instantiate orchestrator
-recipe_crew = RecipeCrew()
+recipe_crew = RecipeAgent()
 
 
 # ---- Session state ----
@@ -141,7 +141,7 @@ st.markdown(
     </style>
     <div class="tiny-footer">
       Built by <a href="https://www.linkedin.com/in/v-s-chaitanya-madduri-2886447a/" target="_blank">Chaitanya Madduri</a>.
-      Powered by Python + Streamlit + CrewAI + MCP.
+      Powered by Python + Streamlit + Claude Agent SDK + Skills + MCP.
     </div>
     """,
     unsafe_allow_html=True,
