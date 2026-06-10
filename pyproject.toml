@@ -19,8 +19,11 @@ dependencies = [
     "crewai[tools]",
     "crewai[azure-ai-inference]",
     "ipykernel",
-    "python-dotenv"
-
+    "python-dotenv",
+    "langchain>=0.3.30",
+    "langgraph>=1.0.1",
+    "langchain-openai>=0.3.23",
+    "langchain-mcp-adapters>=0.1,<0.2",
 ]
 
 [dependency-groups]
